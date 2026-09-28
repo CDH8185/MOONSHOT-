@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cof-bot"
+version = "0.2.0"
+description = "Sentiment driven momentum trading bot for Coinbase Advanced USD spot pairs (shadow mode by default)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Official Coinbase Advanced API Python SDK. Pinned: the integration was
+    # written against the installed 1.8.4 source.
+    "coinbase-advanced-py==1.8.4",
+    "python-dotenv==1.2.3",
+    # Imported directly by the verified-TLS WebSocket override; same range the SDK requires.
+    "websockets>=12.0,<14.0",
+    # Headline sentiment (MIT). Read from the installed 3.3.2 source.
+    "vaderSentiment==3.3.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[project.scripts]
+cof-bot = "cof_bot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"

@@ -1,0 +1,20 @@
+# Secrets. Never commit these.
+.env
+.env.*
+!.env.example
+*.pem
+*cdp_api_key*.json
+secrets/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Runtime output
+logs/
+data/
