@@ -181,6 +181,78 @@ class CoinbaseGateway:
                 return balances
         raise ExchangeError(f"get_accounts did not finish within {MAX_ACCOUNT_PAGES} pages")
 
+    # Orders (Phase 3). create_order is retried with the SAME client_order_id:
+    # Coinbase's Create Order reference (read 2026-09-27) says "If the ID
+    # provided is not unique, the order will not be created and the order
+    # corresponding with that ID will be returned instead", so a retry after a
+    # timeout cannot place a second order.
+
+    def _require_live(self):
+        if self.settings.trading_mode != "live":
+            raise CredentialError("Order placement refused: COF_TRADING_MODE is not live.")
+        return self._require_private()
+
+    def _order_id_from(self, response, op: str) -> str:
+        if not _field(response, "success"):
+            err = _field(response, "error_response") or {}
+            detail = _field(err, "message") or _field(err, "error") or _field(response, "failure_reason") or "unknown"
+            raise ExchangeError(f"{op} rejected: {detail}")
+        order_id = _field(_field(response, "success_response") or {}, "order_id") or _field(response, "order_id")
+        if not order_id:
+            raise ExchangeError(f"{op} returned no order_id")
+        return str(order_id)
+
+    def place_limit_ioc_buy(self, client_order_id: str, product_id: str, base_size: Decimal, limit_price: Decimal) -> str:
+        client = self._require_live()
+        response = self._call(
+            client.limit_order_ioc_buy,
+            client_order_id,
+            product_id,
+            base_size=format(base_size, "f"),
+            limit_price=format(limit_price, "f"),
+            op_name="limit_order_ioc_buy",
+        )
+        return self._order_id_from(response, "limit_order_ioc_buy")
+
+    def place_market_sell(self, client_order_id: str, product_id: str, base_size: Decimal) -> str:
+        client = self._require_live()
+        response = self._call(
+            client.market_order_sell,
+            client_order_id,
+            product_id,
+            base_size=format(base_size, "f"),
+            op_name="market_order_sell",
+        )
+        return self._order_id_from(response, "market_order_sell")
+
+    def get_order(self, order_id: str) -> dict:
+        client = self._require_private()
+        response = self._call(client.get_order, order_id, op_name="get_order")
+        order = _field(response, "order")
+        if order is None:
+            raise ExchangeError(f"get_order {order_id} returned no order")
+        return {
+            "status": str(_field(order, "status") or "UNKNOWN_ORDER_STATUS"),
+            "filled_size": _amount(_field(order, "filled_size")),
+            "average_filled_price": _amount(_field(order, "average_filled_price")),
+            "total_fees": _amount(_field(order, "total_fees")),
+            "filled_value": _amount(_field(order, "filled_value")),
+        }
+
+    def cancel_order(self, order_id: str) -> None:
+        client = self._require_live()
+        self._call(client.cancel_orders, [order_id], op_name="cancel_orders")
+
+    def taker_fee_rate(self) -> Decimal | None:
+        client = self._require_private()
+        summary = self._call(client.get_transaction_summary, product_type="SPOT", op_name="get_transaction_summary")
+        tier = _field(summary, "fee_tier") or {}
+        rate = _amount(_field(tier, "taker_fee_rate"))
+        return rate if rate > 0 else None
+
+    def balances(self) -> list[AccountBalance]:
+        return self._list_balances(self._require_private())
+
     def fetch_universe(self) -> Universe:
         """Build the USD spot universe. Authoritative only when authenticated."""
         if self._private is not None:

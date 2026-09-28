@@ -1,6 +1,9 @@
-"""Phase 2 runtime: live market data + news sentiment -> correlation signals.
+"""Runtime: live market data + news sentiment -> signals -> (optionally) trades.
 
-Signals are reported as JSON lines. Nothing here places an order.
+Everything is reported as JSON lines. Without a trading engine (the ``stream``
+command) nothing here places an order. With one (the ``trade`` command) each
+signal goes to the engine, which applies the risk limits and trades in shadow
+or live mode, and every evaluation also runs the engine's stops and breakers.
 """
 
 from __future__ import annotations
@@ -35,6 +38,8 @@ class StreamRunner:
         clock: Callable[[], float] = time.time,
         feed_factory: Callable[..., MarketDataFeed] = MarketDataFeed,
         collector: NewsCollector | None = None,
+        state: MarketState | None = None,
+        engine_factory: Callable[["StreamRunner"], object] | None = None,
     ):
         if not universe.pairs:
             raise ValueError("empty universe; nothing to stream")
@@ -43,7 +48,8 @@ class StreamRunner:
         self.out = out
         self.clock = clock
         self.volume = VolumeTracker(settings.volume_window_s, settings.volume_baseline_s)
-        self.state = MarketState(self.volume)
+        self.state = state or MarketState(self.volume)
+        self.state.volume = self.volume
         self.feed = feed_factory(
             universe.product_ids,
             self.state,
@@ -60,6 +66,7 @@ class StreamRunner:
         self.headlines: queue.Queue[Headline] = queue.Queue()
         self.stop_event = threading.Event()
         self.signals_emitted = 0
+        self.engine = engine_factory(self) if engine_factory else None
 
     def emit(self, record: dict) -> None:
         self.out.write(json.dumps(record, default=str) + "\n")
@@ -107,7 +114,16 @@ class StreamRunner:
         for sig in result.signals:
             self.signals_emitted += 1
             self.emit({"type": "signal", **sig.to_dict()})
-        self.feed.set_l2_products(result.hot_products)
+        hot = result.hot_products
+        if self.engine is not None:
+            # Stops and breakers first, so a tripped breaker also blocks this round's entries.
+            self.engine.on_tick(now)
+            for sig in sorted(result.signals, key=lambda s: s.strength, reverse=True):
+                self.engine.on_signal(sig, now)
+            # Held products keep their order books so exits are priced from the book.
+            held = self.engine.held_products
+            hot = held + [p for p in hot if p not in held]
+        self.feed.set_l2_products(hot)
         return result
 
     def status(self, result) -> None:
@@ -126,6 +142,7 @@ class StreamRunner:
                 "sentiment_spikes": result.sentiment_spikes,
                 "volume_surges": result.volume_surges,
                 "signals_total": self.signals_emitted,
+                **({"trading": self.engine.summary()} if self.engine is not None else {}),
             }
         )
 

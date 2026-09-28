@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cof-bot"
-version = "0.2.0"
+version = "0.3.0"
 description = "Sentiment driven momentum trading bot for Coinbase Advanced USD spot pairs (shadow mode by default)."
 readme = "README.md"
 requires-python = ">=3.10"

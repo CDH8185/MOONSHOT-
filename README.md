@@ -4,7 +4,7 @@ A sentiment driven momentum trading bot for small, volatile assets, limited to
 USD spot pairs your Coinbase account can trade. It runs in **shadow mode** by
 default: no real orders.
 
-Status: **Phase 2 of 4** complete (live market data, news sentiment, sentiment and volume signals). No order code exists yet.
+Status: **Phase 3 of 4** complete: live market data, news sentiment and signals (Phase 2), plus entry logic, orders, position sizing and circuit breakers (Phase 3). Shadow mode is the default; live orders need two separate switches.
 
 ## Setup (Windows PowerShell)
 
@@ -40,6 +40,8 @@ python -m cof_bot universe --json  # machine readable
 python -m cof_bot headlines        # current headlines, scored and tied to pairs
 python -m cof_bot stream           # live signals as JSON lines (Ctrl+C to stop)
 python -m cof_bot stream --duration 600
+python -m cof_bot trade            # signals + trading engine, shadow mode (no orders)
+python -m cof_bot trade --live     # REAL orders; also needs COF_TRADING_MODE=live
 python -m pytest                   # test suite
 ```
 
@@ -123,8 +125,78 @@ Every REST call passes through `exchange/retry.py`:
 Output from `stream` is one JSON object per line, with `type` set to
 `headline`, `signal` or `status`. Phase 4 writes these to log files.
 
+## Phase 3: how a trade is made and managed
+
+`trade` runs everything `stream` does and hands each signal to the trading
+engine (`trading/engine.py`). The order of authority, highest first:
+
+1. **Circuit breakers** (`risk/guard.py`). A kill switch file (`data/KILL`
+   by default) or a loss of `COF_MAX_DAILY_DRAWDOWN` (default 3%) from the
+   day's starting equity sells every position and blocks entries: until the
+   file is removed, or until the next trading day. The trading day starts at
+   midnight Pacific (`COF_DAY_TIMEZONE`).
+2. **Entry halts.** 3 losing trades in a row, 3 failed orders, 10 trades in
+   a day, or 3 open positions stop new entries. Open positions keep their
+   stops.
+3. **Market quality.** No entry without a synced order book, a price under
+   10 seconds old, and a spread of at most 150 basis points.
+4. **Fractional sizing** (`risk/sizing.py`). The position is the smallest of:
+   * the risk budget: 0.5% of equity, divided by the loss per dollar if the
+     stop is hit (stop, slippage allowance and both fees);
+   * 10% of equity;
+   * cash, less the fee;
+   * 25% of the ask depth within 1% of the mid;
+   * what is left of the day's drawdown allowance.
+
+   Sizing can only shrink or refuse a trade.
+5. **The signal.** Signals are taken strongest first.
+
+**Entry** is a limit order that fills immediately or cancels (IOC), priced
+at the best ask plus 75 basis points, so a thin book can never fill it at an
+unbounded price. **Exit** is a market sell.
+
+**Infinity trailing** (`trading/position.py`). The stop starts 6% under
+entry. When the best bid has risen 4% above entry, a trailing stop switches
+on 5% under the highest bid seen and follows every new high, with no
+take-profit cap. The stop only moves up.
+
+**Immutable limits** (`risk/limits.py`). The limits are read once at start
+and held in a frozen object that no code writes to. Each value is checked
+against hard bounds, so a typo cannot risk more than 2% per trade or 10% per
+day. Their SHA-256 fingerprint is printed at start and in every status line.
+
+**Shadow and live** (`trading/executor.py`). Shadow fills are simulated
+against the live order book at a configurable fee (`COF_SHADOW_FEE_RATE`,
+default 1.2%, an assumption to set to your tier). Live trading needs all of
+the following:
+* `COF_TRADING_MODE=live` and the `--live` flag;
+* a key with the trade permission and without the transfer permission;
+* the account's own product list;
+* the account's real taker fee, read from Coinbase.
+
+The gateway refuses to place an order in any other mode. Order retries reuse
+the same `client_order_id`, which Coinbase documents as returning the
+existing order instead of creating a second one (read 2026-09-27).
+
+**State** (`data/state_shadow.json`, `data/state_live.json`). Open positions,
+shadow cash and the day's counters are saved atomically after every change
+and restored on restart. In live mode, stored positions are checked against
+the account's balances at start.
+
+`trade` output adds JSON lines of type `risk_limits`, `entry`, `exit`,
+`skip` (with the reason), `breaker`, `new_day`, `error`, `restored`,
+`reconcile` and `stopped`.
+
 ### Known limits
 
+* **Stops are enforced by the bot, not by Coinbase.** While the bot is not
+  running, open positions have no stop.
+* **A stop is a trigger, not a price.** A price that gaps through the stop
+  sells at the lower bid, so a single loss can exceed the 0.5% risk budget.
+  A test shows this.
+* **Live cash** comes from Coinbase at start and is then tracked from the
+  bot's own fills. Deposits or trades made while the bot runs are not seen
+  until a restart.
 * A volume surge needs 65 minutes of trade history, so no signal can fire in
   the first hour after start.
 * A word list cannot fix every headline. Example: "Batch upgrade slips to
@@ -142,12 +214,14 @@ src/cof_bot/errors.py            typed exceptions
 src/cof_bot/exchange/retry.py    throttle and retry
 src/cof_bot/exchange/client.py   SDK gateway: verify_access, fetch_universe
 src/cof_bot/exchange/universe.py USD pair filter
-src/cof_bot/cli.py               verify, universe, headlines, stream
+src/cof_bot/cli.py               verify, universe, headlines, stream, trade
 src/cof_bot/market/              ws_feed.py, order_book.py, volume.py
 src/cof_bot/news/feeds.py        RSS and Atom collection
 src/cof_bot/sentiment/           analyzer.py (VADER + lexicon), entities.py
 src/cof_bot/signals/correlator.py sentiment and volume signal
-src/cof_bot/runtime.py           stream runner
+src/cof_bot/runtime.py           stream runner (and trade runner with an engine)
+src/cof_bot/risk/                limits.py (immutable), sizing.py, guard.py (breakers)
+src/cof_bot/trading/             engine.py, position.py (infinity trailing), executor.py, store.py
 tests/fixtures/                  recorded live WebSocket messages
 tests/                           offline tests with a fake SDK client
 ```

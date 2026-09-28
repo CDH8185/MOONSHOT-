@@ -227,3 +227,37 @@ def load_stream_settings(env: Mapping[str, str] | None = None) -> StreamSettings
             hot_volume_ratio=_float(env, "COF_HOT_VOLUME_RATIO", d.hot_volume_ratio, 1),
         ),
     )
+
+
+@dataclass(frozen=True)
+class TradeSettings:
+    """Phase 3 run settings. The risk limits themselves are in risk/limits.py."""
+
+    shadow_start_usd: Decimal = Decimal("1000")
+    # Shadow fills are charged this taker fee. It is an assumption for
+    # simulation only; live mode reads the account's real taker rate from
+    # Coinbase and refuses to start without it. Set it to your fee tier.
+    shadow_fee_rate: Decimal = Decimal("0.012")
+    state_dir: str = "data"
+    kill_switch_file: str = "data/KILL"
+
+    def state_file(self, mode: str) -> str:
+        return str(Path(self.state_dir) / f"state_{mode}.json")
+
+
+def load_trade_settings(env: Mapping[str, str] | None = None) -> TradeSettings:
+    if env is None:
+        env = os.environ
+    d = TradeSettings()
+    start = _decimal(env, "COF_SHADOW_START_USD", d.shadow_start_usd)
+    if start <= 0:
+        raise ConfigError("COF_SHADOW_START_USD must be > 0.")
+    fee = _decimal(env, "COF_SHADOW_FEE_RATE", d.shadow_fee_rate)
+    if fee >= Decimal("0.05"):
+        raise ConfigError("COF_SHADOW_FEE_RATE must be a fraction below 0.05 (0.012 means 1.2%).")
+    return TradeSettings(
+        shadow_start_usd=start,
+        shadow_fee_rate=fee,
+        state_dir=_get(env, "COF_STATE_DIR") or d.state_dir,
+        kill_switch_file=_get(env, "COF_KILL_SWITCH_FILE") or d.kill_switch_file,
+    )
