@@ -24,6 +24,8 @@ from cof_bot.news.feeds import Headline, NewsCollector
 from cof_bot.sentiment.analyzer import HeadlineSentiment
 from cof_bot.sentiment.entities import AssetMatcher
 from cof_bot.signals.correlator import SentimentVolumeCorrelator
+from cof_bot.telemetry.journal import Journal
+from cof_bot.telemetry.metrics import RunMetrics
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ class StreamRunner:
         collector: NewsCollector | None = None,
         state: MarketState | None = None,
         engine_factory: Callable[["StreamRunner"], object] | None = None,
+        journal: Journal | None = None,
     ):
         if not universe.pairs:
             raise ValueError("empty universe; nothing to stream")
@@ -66,9 +69,16 @@ class StreamRunner:
         self.headlines: queue.Queue[Headline] = queue.Queue()
         self.stop_event = threading.Event()
         self.signals_emitted = 0
+        self.journal = journal
+        self.metrics = RunMetrics(started_at=clock())
         self.engine = engine_factory(self) if engine_factory else None
 
     def emit(self, record: dict) -> None:
+        """Report one record: count it, journal it (if a journal is set), print it."""
+        self.metrics.count(record)
+        if self.journal is not None:
+            self.journal.write(record)  # the journal echoes to self.out itself
+            return
         self.out.write(json.dumps(record, default=str) + "\n")
         self.out.flush()
 
@@ -108,6 +118,13 @@ class StreamRunner:
 
     def evaluate(self) -> None:
         now = self.clock()
+        t0 = time.perf_counter()
+        try:
+            return self._evaluate(now)
+        finally:
+            self.metrics.timed_eval(time.perf_counter() - t0)
+
+    def _evaluate(self, now: float):
         with self.state.lock:
             result = self.correlator.evaluate(now, self.volume, self.state.books, self.universe.product_ids)
             self.volume.prune(now)
@@ -142,6 +159,7 @@ class StreamRunner:
                 "sentiment_spikes": result.sentiment_spikes,
                 "volume_surges": result.volume_surges,
                 "signals_total": self.signals_emitted,
+                "metrics": self.metrics.to_dict(self.clock()),
                 **({"trading": self.engine.summary()} if self.engine is not None else {}),
             }
         )

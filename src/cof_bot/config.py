@@ -240,6 +240,7 @@ class TradeSettings:
     shadow_fee_rate: Decimal = Decimal("0.012")
     state_dir: str = "data"
     kill_switch_file: str = "data/KILL"
+    log_dir: str = "logs"
 
     def state_file(self, mode: str) -> str:
         return str(Path(self.state_dir) / f"state_{mode}.json")
@@ -260,4 +261,5 @@ def load_trade_settings(env: Mapping[str, str] | None = None) -> TradeSettings:
         shadow_fee_rate=fee,
         state_dir=_get(env, "COF_STATE_DIR") or d.state_dir,
         kill_switch_file=_get(env, "COF_KILL_SWITCH_FILE") or d.kill_switch_file,
+        log_dir=_get(env, "COF_LOG_DIR") or d.log_dir,
     )

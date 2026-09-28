@@ -1,0 +1,238 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CDH8185/MOONSHOT-/schema/events.schema.json",
+  "title": "cof_bot journal record",
+  "description": "One line of logs/events_YYYY-MM-DD.jsonl or logs/trades.jsonl. Schema version 1.0. Every record carries the common fields; the type selects the rest. Money and sizes are decimal strings, never floats, so they round trip exactly.",
+  "type": "object",
+  "required": ["schema_version", "seq", "run_id", "at", "at_iso", "type"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "seq": {"type": "integer", "minimum": 1, "description": "Rises by 1 per record within a run; a gap means a missing record."},
+    "run_id": {"type": "string", "description": "Identifies the process that wrote the record."},
+    "at": {"type": "number", "description": "Epoch seconds, UTC."},
+    "at_iso": {"type": "string", "description": "The same instant in the trading time zone (COF_DAY_TIMEZONE, default America/Los_Angeles)."},
+    "mode": {"enum": ["stream", "shadow", "live"]},
+    "type": {
+      "enum": ["headline", "signal", "status", "risk_limits", "entry", "exit", "skip", "breaker", "new_day",
+               "error", "warning", "restored", "reconcile", "stopped"]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"type": {"const": "headline"}}},
+      "then": {
+        "required": ["source", "id", "title", "compound", "label", "products"],
+        "properties": {
+          "source": {"type": "string"},
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "compound": {"type": "number", "minimum": -1, "maximum": 1},
+          "label": {"enum": ["positive", "neutral", "negative"]},
+          "products": {"type": "array", "items": {"type": "string"}, "description": "Product ids the headline was matched to; may be empty."}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "signal"}}},
+      "then": {
+        "required": ["product_id", "mentions", "mean_compound", "headline_ids", "volume_ratio", "window_usd",
+                     "buy_share", "price_change_pct", "lag_s", "strength"],
+        "properties": {
+          "product_id": {"type": "string"},
+          "mentions": {"type": "integer"},
+          "mean_compound": {"type": "number"},
+          "headline_ids": {"type": "array", "items": {"type": "string"}},
+          "titles": {"type": "array", "items": {"type": "string"}},
+          "sources": {"type": "array", "items": {"type": "string"}},
+          "volume_ratio": {"type": "number"},
+          "window_usd": {"type": "number"},
+          "buy_share": {"type": "number"},
+          "price_change_pct": {"type": "number"},
+          "lag_s": {"type": "number"},
+          "strength": {"type": "number", "description": "Ranking only: mean sentiment times log2 of the volume ratio."},
+          "spread_bps": {"type": ["number", "null"]},
+          "book_imbalance": {"type": ["number", "null"]}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "status"}}},
+      "then": {
+        "required": ["ws_connects", "ws_failures", "messages", "sequence_gaps", "bad_messages", "books_synced",
+                     "signals_total", "metrics"],
+        "properties": {
+          "ws_connects": {"type": "integer"},
+          "ws_failures": {"type": "integer"},
+          "messages": {"type": "integer"},
+          "sequence_gaps": {"type": "integer"},
+          "bad_messages": {"type": "integer"},
+          "server_errors": {"type": "array", "items": {"type": "string"}},
+          "books_synced": {"type": "integer"},
+          "sentiment_spikes": {"type": "integer"},
+          "volume_surges": {"type": "integer"},
+          "signals_total": {"type": "integer"},
+          "metrics": {"$ref": "#/$defs/metrics"},
+          "trading": {"$ref": "#/$defs/trading_summary"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "risk_limits"}}},
+      "then": {
+        "required": ["fingerprint", "limits", "fee_rate", "cash_usd"],
+        "properties": {
+          "fingerprint": {"type": "string", "description": "First 16 hex digits of the SHA-256 of the limits."},
+          "limits": {"type": "object"},
+          "fee_rate": {"$ref": "#/$defs/decimal"},
+          "cash_usd": {"$ref": "#/$defs/decimal"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "entry"}}},
+      "then": {
+        "required": ["product_id", "fill", "sizing", "stop_price", "signal_strength", "headline_ids"],
+        "properties": {
+          "product_id": {"type": "string"},
+          "fill": {"$ref": "#/$defs/fill"},
+          "sizing": {
+            "type": "object",
+            "required": ["binding", "limit_price", "notional_usd", "max_loss_usd", "equity_usd"],
+            "properties": {
+              "binding": {"enum": ["risk_budget", "max_position", "cash", "book_depth", "daily_headroom"],
+                          "description": "Which cap set the size."},
+              "limit_price": {"$ref": "#/$defs/decimal"},
+              "notional_usd": {"$ref": "#/$defs/decimal"},
+              "max_loss_usd": {"$ref": "#/$defs/decimal"},
+              "equity_usd": {"$ref": "#/$defs/decimal"}
+            }
+          },
+          "stop_price": {"$ref": "#/$defs/decimal"},
+          "signal_strength": {"type": "number"},
+          "headline_ids": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "exit"}}},
+      "then": {
+        "required": ["product_id", "reason", "fill", "entry_price", "high_water", "pnl_usd", "held_s", "remaining_base"],
+        "properties": {
+          "product_id": {"type": "string"},
+          "reason": {"type": "string", "description": "hard_stop, trailing_stop, or breaker:<name>."},
+          "fill": {"$ref": "#/$defs/fill"},
+          "entry_price": {"$ref": "#/$defs/decimal"},
+          "high_water": {"$ref": "#/$defs/decimal"},
+          "pnl_usd": {"$ref": "#/$defs/decimal", "description": "Proceeds less fees, less cost including entry fee."},
+          "held_s": {"type": "number"},
+          "remaining_base": {"$ref": "#/$defs/decimal", "description": "0 unless the exit was partial."}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "skip"}}},
+      "then": {
+        "required": ["product_id", "reason"],
+        "properties": {"product_id": {"type": "string"}, "reason": {"type": "string"}}
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "breaker"}}},
+      "then": {
+        "required": ["reason", "flatten", "day"],
+        "properties": {
+          "reason": {"enum": ["kill_switch", "daily_drawdown", "consecutive_losses", "order_failures"]},
+          "flatten": {"type": "boolean", "description": "True when every position was sold."},
+          "day": {"type": "string"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "new_day"}}},
+      "then": {
+        "required": ["day", "start_equity"],
+        "properties": {"day": {"type": "string"}, "start_equity": {"$ref": "#/$defs/decimal"}, "previous": {"type": ["object", "null"]}}
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "error"}}},
+      "then": {
+        "required": ["message"],
+        "properties": {"product_id": {"type": "string"}, "action": {"enum": ["buy", "sell"]}, "message": {"type": "string"}}
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "stopped"}}},
+      "then": {"required": ["trading", "metrics"], "properties": {"trading": {"$ref": "#/$defs/trading_summary"}, "metrics": {"$ref": "#/$defs/metrics"}}}
+    }
+  ],
+  "$defs": {
+    "decimal": {"type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?(E[+-]?[0-9]+)?$", "description": "A decimal number as a string."},
+    "fill": {
+      "type": "object",
+      "required": ["product_id", "side", "base_size", "avg_price", "fees_usd", "client_order_id", "status"],
+      "properties": {
+        "product_id": {"type": "string"},
+        "side": {"enum": ["BUY", "SELL"]},
+        "base_size": {"$ref": "#/$defs/decimal"},
+        "avg_price": {"$ref": "#/$defs/decimal"},
+        "fees_usd": {"$ref": "#/$defs/decimal"},
+        "client_order_id": {"type": "string"},
+        "order_id": {"type": ["string", "null"], "description": "Coinbase order id; null in shadow mode."},
+        "status": {"enum": ["FILLED", "CANCELLED", "EXPIRED", "FAILED", "OPEN", "PENDING", "UNKNOWN_ORDER_STATUS", "QUEUED", "CANCEL_QUEUED", "EDIT_QUEUED"]},
+        "note": {"type": ["string", "null"]}
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["uptime_s", "headlines", "signals", "entries", "exits", "skips", "errors", "breakers"],
+      "properties": {
+        "uptime_s": {"type": "number"},
+        "headlines": {"type": "integer"},
+        "signals": {"type": "integer"},
+        "entries": {"type": "integer"},
+        "exits": {"type": "integer"},
+        "skips": {"type": "integer"},
+        "skip_reasons": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "errors": {"type": "integer"},
+        "breakers": {"type": "integer"},
+        "eval_ms_last": {"type": "number"},
+        "eval_ms_max": {"type": "number"},
+        "eval_ms_mean": {"type": "number"}
+      }
+    },
+    "trading_summary": {
+      "type": "object",
+      "required": ["mode", "equity_usd", "cash_usd", "open_positions", "limits_fingerprint"],
+      "properties": {
+        "mode": {"enum": ["shadow", "live"]},
+        "equity_usd": {"$ref": "#/$defs/decimal"},
+        "cash_usd": {"$ref": "#/$defs/decimal"},
+        "open_positions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["size", "entry", "stop", "trailing"],
+            "properties": {
+              "size": {"$ref": "#/$defs/decimal"},
+              "entry": {"$ref": "#/$defs/decimal"},
+              "stop": {"$ref": "#/$defs/decimal"},
+              "trailing": {"type": "boolean"}
+            }
+          }
+        },
+        "day": {
+          "type": ["object", "null"],
+          "properties": {
+            "day": {"type": "string"},
+            "trades": {"type": "integer"},
+            "halted": {"type": ["string", "null"]},
+            "realised_pnl_usd": {"$ref": "#/$defs/decimal"},
+            "drawdown_pct": {"$ref": "#/$defs/decimal"}
+          }
+        },
+        "limits_fingerprint": {"type": "string"}
+      }
+    }
+  }
+}

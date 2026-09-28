@@ -4,7 +4,7 @@ A sentiment driven momentum trading bot for small, volatile assets, limited to
 USD spot pairs your Coinbase account can trade. It runs in **shadow mode** by
 default: no real orders.
 
-Status: **Phase 3 of 4** complete: live market data, news sentiment and signals (Phase 2), plus entry logic, orders, position sizing and circuit breakers (Phase 3). Shadow mode is the default; live orders need two separate switches.
+Status: **all 4 phases built.** Live market data, news sentiment and signals (Phase 2); entry logic, orders, position sizing and circuit breakers (Phase 3); journal, telemetry, health file and machine readable reports (Phase 4). Shadow mode is the default; live orders need two separate switches. Not yet run against a real API key.
 
 ## Setup (Windows PowerShell)
 
@@ -42,6 +42,9 @@ python -m cof_bot stream           # live signals as JSON lines (Ctrl+C to stop)
 python -m cof_bot stream --duration 600
 python -m cof_bot trade            # signals + trading engine, shadow mode (no orders)
 python -m cof_bot trade --live     # REAL orders; also needs COF_TRADING_MODE=live
+python -m cof_bot report           # health, performance, open positions, from the journal
+python -m cof_bot report --json    # the same, machine readable (schema/report.schema.json)
+python -m cof_bot report --day 2026-09-27 --mode shadow
 python -m pytest                   # test suite
 ```
 
@@ -187,6 +190,45 @@ the account's balances at start.
 `skip` (with the reason), `breaker`, `new_day`, `error`, `restored`,
 `reconcile` and `stopped`.
 
+## Phase 4: journal, telemetry and reports
+
+`stream` and `trade` write everything they print to a journal on disk
+(`telemetry/journal.py`), under `logs/` (`COF_LOG_DIR`), which is git
+ignored:
+
+| File | Holds |
+|---|---|
+| `events_YYYY-MM-DD.jsonl` | Every record, one JSON object per line, a new file each trading day (Pacific). Never rewritten. |
+| `trades.jsonl` | Only `entry` and `exit` records, for the life of the installation, synced to disk on every write. |
+| `health.json` | The latest `status` record and the journal's counters, replaced atomically, for an outside monitor. |
+| `cof_bot.log` | The text log, rotated at 5 MB, 5 files kept. |
+
+Every record is stamped with `schema_version`, `seq` (rises by 1 per
+record, so a gap is visible), `run_id`, `at` (epoch seconds) and `at_iso`
+(Pacific). A disk error is counted and logged once; the trading loop
+continues, because a stop must still fire when the disk is full.
+
+**Telemetry.** Each `status` record (every 60 seconds) carries a `metrics`
+block: uptime, counts of headlines, signals, entries, exits, skips by reason,
+errors and breakers, and the evaluation loop's timing (last, mean, maximum in
+milliseconds), alongside the feed counters and the trading summary.
+
+**Reports.** `report` reads the journal and the state file and prints health
+(`ok`, `degraded`, `halted`, `stale` or `unknown`), realised P&L, win rate,
+profit factor, largest loss, maximum drawdown of realised P&L, fees, exit
+reasons, per pair results, open positions with their stops, and the risk
+limit fingerprint in force at the last start. Figures are recomputed from
+`trades.jsonl` every time, never carried in memory. `--day` and `--mode`
+narrow it.
+
+**Machine readable output.** `report --json` and every journal line obey the
+published JSON Schemas in `schema/`: `events.schema.json` for records and
+`report.schema.json` for reports, both version 1.0. Money and sizes are
+decimal strings, never floats. A Model Context Protocol server, a dashboard
+or any script can read `health.json`, tail `events_*.jsonl`, or call
+`report --json` without parsing prose. A test validates sample records and a
+report against both schemas.
+
 ### Known limits
 
 * **Stops are enforced by the bot, not by Coinbase.** While the bot is not
@@ -214,7 +256,7 @@ src/cof_bot/errors.py            typed exceptions
 src/cof_bot/exchange/retry.py    throttle and retry
 src/cof_bot/exchange/client.py   SDK gateway: verify_access, fetch_universe
 src/cof_bot/exchange/universe.py USD pair filter
-src/cof_bot/cli.py               verify, universe, headlines, stream, trade
+src/cof_bot/cli.py               verify, universe, headlines, stream, trade, report
 src/cof_bot/market/              ws_feed.py, order_book.py, volume.py
 src/cof_bot/news/feeds.py        RSS and Atom collection
 src/cof_bot/sentiment/           analyzer.py (VADER + lexicon), entities.py
@@ -222,6 +264,8 @@ src/cof_bot/signals/correlator.py sentiment and volume signal
 src/cof_bot/runtime.py           stream runner (and trade runner with an engine)
 src/cof_bot/risk/                limits.py (immutable), sizing.py, guard.py (breakers)
 src/cof_bot/trading/             engine.py, position.py (infinity trailing), executor.py, store.py
+src/cof_bot/telemetry/           journal.py, metrics.py, report.py
+schema/                          events.schema.json, report.schema.json (version 1.0)
 tests/fixtures/                  recorded live WebSocket messages
 tests/                           offline tests with a fake SDK client
 ```

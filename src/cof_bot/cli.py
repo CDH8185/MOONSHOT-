@@ -5,6 +5,7 @@
     python -m cof_bot headlines  score and attribute current news headlines
     python -m cof_bot stream     live signals from sentiment and volume (no orders)
     python -m cof_bot trade      signals plus the Phase 3 engine (shadow unless --live)
+    python -m cof_bot report     health, trade performance and open positions from the journal
 """
 
 from __future__ import annotations
@@ -84,17 +85,59 @@ def _cmd_headlines(gateway: CoinbaseGateway, args) -> int:
     return 0
 
 
+def _open_journal(mode: str):
+    """Journal under COF_LOG_DIR, stamped with the risk time zone, echoing to stdout."""
+    from cof_bot.config import load_trade_settings
+    from cof_bot.risk.limits import load_risk_limits
+    from cof_bot.telemetry.journal import Journal
+
+    trade = load_trade_settings()
+    tz = load_risk_limits().day_timezone
+    journal = Journal(trade.log_dir, timezone=tz, mode=mode, echo=sys.stdout)
+    _attach_file_log(trade.log_dir)
+    logging.getLogger(__name__).info("Journal %s in %s (run %s)", mode, trade.log_dir, journal.run_id)
+    return journal
+
+
+def _attach_file_log(log_dir: str) -> None:
+    """Rotating text log next to the journal, in addition to stderr."""
+    from logging.handlers import RotatingFileHandler
+    from pathlib import Path
+
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(Path(log_dir) / "cof_bot.log", maxBytes=5_000_000, backupCount=5, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(handler)
+
+
 def _cmd_stream(gateway: CoinbaseGateway, args) -> int:
     from cof_bot.runtime import StreamRunner
 
     universe = gateway.fetch_universe()
     if not universe.authoritative:
         print("NOTICE: streaming the public product catalogue (no credentials). Signals only.", file=sys.stderr)
-    runner = StreamRunner(universe, load_stream_settings())
+    journal = None if args.no_journal else _open_journal("stream")
+    runner = StreamRunner(universe, load_stream_settings(), journal=journal)
     try:
         runner.run(duration_s=args.duration)
     except KeyboardInterrupt:
         runner.stop_event.set()
+    finally:
+        if journal is not None:
+            journal.close()
+    return 0
+
+
+def _cmd_report(gateway: CoinbaseGateway, args) -> int:
+    from cof_bot.config import load_trade_settings
+    from cof_bot.telemetry.report import build_report, format_text
+
+    trade = load_trade_settings()
+    report = build_report(trade.log_dir, trade.state_dir, day=args.day, mode=args.mode)
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(format_text(report))
     return 0
 
 
@@ -177,14 +220,17 @@ def _cmd_trade(gateway: CoinbaseGateway, args) -> int:
             _reconcile(engine, balances, now)
         return engine
 
-    runner = StreamRunner(universe, load_stream_settings(), engine_factory=factory)
+    journal = _open_journal(mode)
+    runner = StreamRunner(universe, load_stream_settings(), engine_factory=factory, journal=journal)
     try:
         runner.run(duration_s=args.duration)
     except KeyboardInterrupt:
         runner.stop_event.set()
     finally:
         runner.engine.persist()
-        runner.emit({"type": "stopped", "at": time.time(), "trading": runner.engine.summary()})
+        runner.emit({"type": "stopped", "at": time.time(), "trading": runner.engine.summary(),
+                     "metrics": runner.metrics.to_dict(time.time())})
+        journal.close()
     return 0
 
 
@@ -200,10 +246,15 @@ def main(argv: list[str] | None = None) -> int:
     headlines.add_argument("--matched-only", action="store_true", help="only headlines tied to a pair")
     stream = sub.add_parser("stream", help="live market data + news; print correlation signals (no orders)")
     stream.add_argument("--duration", type=float, default=None, help="seconds to run (default: until Ctrl+C)")
+    stream.add_argument("--no-journal", action="store_true", help="print only; write no log files")
     trade = sub.add_parser("trade", help="signals plus the trading engine; shadow mode unless --live")
     trade.add_argument("--duration", type=float, default=None, help="seconds to run (default: until Ctrl+C)")
     trade.add_argument("--live", action="store_true",
                        help="place real orders; also requires COF_TRADING_MODE=live")
+    report = sub.add_parser("report", help="health, performance and open positions from the journal")
+    report.add_argument("--json", action="store_true", help="machine readable (schema/report.schema.json)")
+    report.add_argument("--day", default=None, help="limit trade figures to one day, YYYY-MM-DD")
+    report.add_argument("--mode", choices=["shadow", "live"], default=None, help="limit to one mode")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -220,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
             "headlines": _cmd_headlines,
             "stream": _cmd_stream,
             "trade": _cmd_trade,
+            "report": _cmd_report,
         }[args.command]
         return handler(gateway, args)
     except CofBotError as exc:

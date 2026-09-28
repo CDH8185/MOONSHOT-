@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CDH8185/MOONSHOT-/schema/report.schema.json",
+  "title": "cof_bot report",
+  "description": "Output of `python -m cof_bot report --json`. Schema version 1.0. Built from the journal on disk, so it can be produced while the bot runs or after it stops. Money is decimal strings.",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "health", "trades", "open_positions", "days", "limits"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "generated_at": {"type": "number", "description": "Epoch seconds, UTC."},
+    "health": {
+      "type": "object",
+      "required": ["verdict", "reason"],
+      "properties": {
+        "verdict": {"enum": ["ok", "degraded", "halted", "stale", "unknown"],
+                    "description": "ok: a status was written in the last 180 s with no feed trouble. degraded: reconnects, sequence gaps or server errors. halted: a circuit breaker is tripped. stale: no status in 180 s, so the bot is not running or is stuck. unknown: no health file yet."},
+        "reason": {"type": "string"},
+        "last_status_at_iso": {"type": ["string", "null"]},
+        "run_id": {"type": ["string", "null"]},
+        "mode": {"type": ["string", "null"]},
+        "equity_usd": {"type": ["string", "null"]},
+        "journal": {"type": ["object", "null"], "properties": {"records": {"type": "integer"}, "write_errors": {"type": "integer"}, "seq": {"type": "integer"}}}
+      }
+    },
+    "trades": {
+      "type": "object",
+      "required": ["entries", "exits", "wins", "losses", "realised_pnl_usd", "max_drawdown_usd", "fees_usd", "exit_reasons", "by_product"],
+      "properties": {
+        "day": {"type": ["string", "null"], "description": "The day filter applied, if any."},
+        "mode": {"type": ["string", "null"], "description": "The mode filter applied, if any."},
+        "entries": {"type": "integer"},
+        "exits": {"type": "integer"},
+        "wins": {"type": "integer"},
+        "losses": {"type": "integer"},
+        "win_rate": {"type": ["string", "null"], "description": "wins / exits with a non zero result, as a decimal string."},
+        "realised_pnl_usd": {"type": "string"},
+        "gross_win_usd": {"type": "string"},
+        "gross_loss_usd": {"type": "string", "description": "Positive number."},
+        "profit_factor": {"type": ["string", "null"], "description": "gross_win / gross_loss; null when there is no loss."},
+        "avg_win_usd": {"type": ["string", "null"]},
+        "avg_loss_usd": {"type": ["string", "null"], "description": "Positive number."},
+        "largest_loss_usd": {"type": ["string", "null"], "description": "Negative number."},
+        "max_drawdown_usd": {"type": "string", "description": "Largest fall of cumulative realised P&L from its peak."},
+        "fees_usd": {"type": "string"},
+        "avg_held_s": {"type": ["number", "null"]},
+        "exit_reasons": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "by_product": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["exits", "wins", "pnl_usd"],
+            "properties": {"exits": {"type": "integer"}, "wins": {"type": "integer"}, "pnl_usd": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "open_positions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["mode", "base_size", "entry_price", "stop_price", "high_water", "trailing"],
+        "properties": {
+          "mode": {"enum": ["shadow", "live"]},
+          "base_size": {"type": "string"},
+          "entry_price": {"type": "string"},
+          "stop_price": {"type": "string"},
+          "high_water": {"type": "string"},
+          "trailing": {"type": "boolean"},
+          "opened_at": {"type": "number"}
+        }
+      }
+    },
+    "days": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["day", "records", "signals", "entries", "exits", "errors"],
+        "properties": {
+          "day": {"type": "string"},
+          "records": {"type": "integer"},
+          "signals": {"type": "integer"},
+          "entries": {"type": "integer"},
+          "exits": {"type": "integer"},
+          "errors": {"type": "integer"}
+        }
+      }
+    },
+    "limits": {
+      "type": ["object", "null"],
+      "description": "The risk limits recorded at the most recent start, or null if no run has been journaled.",
+      "properties": {
+        "fingerprint": {"type": "string"},
+        "mode": {"type": "string"},
+        "at_iso": {"type": "string"},
+        "limits": {"type": "object"}
+      }
+    }
+  }
+}
